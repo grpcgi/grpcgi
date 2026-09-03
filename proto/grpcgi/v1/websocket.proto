@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package grpcgi.v1;
+
+import "grpcgi/v1/http.proto";
+
+// WebSocket bridge service. The Envoy WASM/native filter establishes one
+// bidi-streaming Connect call per WebSocket connection. HTTP upgrade
+// metadata (path, headers) is passed as gRPC initial metadata so grpcgi
+// can reconstruct the ASGI websocket scope without widening this message.
+//
+// Control frames (ping/pong) are handled entirely by the Envoy filter and
+// never forwarded here. gRPC keepalive is configured independently between
+// Envoy and grpcgi. Close (opcode 0x08) is signalled by closing the stream.
+service WebSocketBridge {
+  // Legacy data-only RPC. Handshake state is carried in gRPC metadata and
+  // stream closure loses the WebSocket close code. Retained for deployed
+  // prototype clients; new implementations use Session.
+  rpc Connect(stream Frame) returns (stream Frame);
+
+  // Complete WebSocket lifecycle. The first client event is open; the first
+  // server event is accept or reject; data follows only after accept; either
+  // peer may finish with close.
+  rpc Session(stream WebSocketEvent) returns (stream WebSocketEvent);
+}
+
+// A single WebSocket data frame payload. Only text (0x01) and binary (0x02)
+// opcodes are forwarded; all control frames are absorbed by the filter.
+message Frame {
+  // Raw payload bytes. For text frames, valid UTF-8.
+  bytes payload = 1;
+  // True for binary frames (opcode 0x02), false for text (0x01).
+  bool binary = 2;
+}
+
+message WebSocketEvent {
+  oneof event {
+    WebSocketOpen open = 1;
+    WebSocketAccept accept = 2;
+    WebSocketReject reject = 3;
+    WebSocketData data = 4;
+    WebSocketClose close = 5;
+  }
+}
+
+message WebSocketOpen {
+  // Raw path and query, beginning with '/'.
+  string path = 1;
+  // "ws" or "wss" as observed downstream.
+  string scheme = 2;
+  string authority = 3;
+  repeated Header headers = 4;
+  repeated string subprotocols = 5;
+  string remote_address = 6;
+  uint32 remote_port = 7;
+  string root_path = 8;
+}
+
+message WebSocketAccept {
+  // Empty means no subprotocol was selected. A non-empty value MUST have
+  // appeared in WebSocketOpen.subprotocols.
+  string subprotocol = 1;
+  repeated Header headers = 2;
+}
+
+message WebSocketReject {
+  // HTTP rejection response, before the protocol switches. Valid range is
+  // 300..599; implementations default an invalid or absent value to 403.
+  uint32 status = 1;
+  repeated Header headers = 2;
+  bytes body = 3;
+}
+
+message WebSocketData {
+  // One complete WebSocket message. The edge proxy reassembles fragmented
+  // wire frames and validates UTF-8 for text before producing this event.
+  bytes payload = 1;
+  bool binary = 2;
+}
+
+message WebSocketClose {
+  // RFC 6455 close code. Zero means that no close frame was received.
+  uint32 code = 1;
+  // Valid UTF-8 close reason, capped so code + reason fits a control frame.
+  string reason = 2;
+}

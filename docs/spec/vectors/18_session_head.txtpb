@@ -1,0 +1,7 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+head {
+  status: 200
+  sec_websocket_protocol: "chat"
+  session: "s-8f2a"
+  session_ttl_ms: 30000
+}

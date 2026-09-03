@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package grpcgi.v1;
+
+// HTTP bridge service. Envoy's ext_proc filter calls Process() for each
+// HTTP request. grpcgi reconstructs the full ASGI http scope from the
+// stream of ProcessingRequest messages and streams ProcessingResponse
+// messages back as the ASGI app produces response events.
+//
+// NOTE: This is a simplified prototype proto. Production should implement
+// the full Envoy ext_proc protocol:
+// envoy.service.ext_proc.v3.ExternalProcessor
+service HttpBridge {
+  // Unary RPC used by the Envoy WASM filter via dispatch_grpc_call.
+  // Full request (headers + body) in, full response (status + headers + body) out.
+  // Suitable for typical HTTP request/response; body is buffered on both sides.
+  rpc Handle(HttpRequest) returns (HttpResponse);
+
+  // Bidi-streaming RPC for chunked/streaming responses (SSE, large files).
+  rpc Process(stream ProcessingRequest) returns (stream ProcessingResponse);
+}
+
+// ── Unary Handle messages ─────────────────────────────────────────────────────
+
+message HttpRequest {
+  // HTTP headers including pseudo-headers (:method, :path, :scheme, :authority).
+  repeated Header headers = 1;
+  // Request body (may be empty).
+  bytes body = 2;
+  // Optional request trailers. Handle is a compatibility RPC; new proxies
+  // SHOULD use Process so the body and trailers remain streaming.
+  Trailers trailers = 3;
+}
+
+message HttpResponse {
+  uint32 status = 1;
+  repeated Header headers = 2;
+  bytes body = 3;
+  // Optional HTTP response trailers. In particular, an HTTP/gRPC response's
+  // grpc-status belongs here; it is not the status of this bridge RPC.
+  Trailers trailers = 4;
+}
+
+// ── Streaming Process messages ────────────────────────────────────────────────
+
+message ProcessingRequest {
+  oneof request {
+    // First message: HTTP request headers including pseudo-headers
+    // (:method, :path, :scheme, :authority).
+    RequestHeaders request_headers = 1;
+    // Subsequent messages: request body chunks.
+    BodyChunk request_body = 2;
+    // Optional final request trailers. This is always the last request-side
+    // message and itself ends the request stream.
+    Trailers request_trailers = 3;
+  }
+}
+
+message ProcessingResponse {
+  oneof response {
+    // First response: HTTP response status + headers.
+    ResponseHeaders response_headers = 1;
+    // Subsequent responses: response body chunks.
+    BodyChunk response_body = 2;
+    // Optional final response trailers. This is always the last
+    // response-side message and itself ends the response stream.
+    Trailers response_trailers = 3;
+  }
+}
+
+message RequestHeaders {
+  repeated Header headers = 1;
+  // True when the request has neither body nor trailers. This lets the ASGI
+  // application run before the client half-closes the outer gRPC stream.
+  bool end_of_stream = 2;
+  // Downstream HTTP version: "1.0", "1.1", "2", or "3".
+  string http_version = 3;
+  // Original downstream peer, after the proxy's trusted-proxy policy.
+  string remote_address = 4;
+  uint32 remote_port = 5;
+  // ASGI SCRIPT_NAME/root_path. Empty means no mounted prefix.
+  string root_path = 6;
+}
+
+message ResponseHeaders {
+  uint32 status = 1;
+  repeated Header headers = 2;
+  // True when this final response has neither body nor trailers.
+  bool end_of_stream = 3;
+}
+
+message Trailers {
+  repeated Header headers = 1;
+}
+
+// Shared for both request and response body streaming.
+message BodyChunk {
+  bytes data = 1;
+  bool end_of_stream = 2;
+}
+
+message Header {
+  // Lower-case HTTP field name, or a defined request pseudo-header. Header
+  // order and duplicate fields are significant and MUST be preserved.
+  string key = 1;
+  oneof value_kind {
+    // UTF-8 compatibility representation used by the prototype.
+    // New implementations SHOULD populate raw_value instead.
+    string value = 2;
+    // Byte-preserving field value. This is a separate field instead of
+    // changing field 2 so generated-code users can migrate without a
+    // source-breaking string-to-bytes change.
+    bytes raw_value = 3;
+  }
+}

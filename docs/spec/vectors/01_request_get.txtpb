@@ -1,0 +1,16 @@
+# type: grpcgi.v1alpha1.RequestEvent
+head {
+  method: METHOD_GET
+  path: "/index.html?x=1"
+  authority: "example.com"
+  scheme: SCHEME_HTTPS
+  end_of_stream: true
+  user_agent: "curl/8.7.1"
+  accept: "*/*"
+  x_request_id: "8d2a5a1e-2f4b-4e2b-9d8e-0c1b2a3d4e5f"
+  http_version: HTTP_VERSION_2
+  remote_address: "192.0.2.10"
+  remote_port: 51234
+  tls: true
+  tls_server_name: "example.com"
+}

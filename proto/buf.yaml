@@ -1,0 +1,19 @@
+version: v2
+modules:
+  - path: .
+lint:
+  ignore:
+    # Superseded prototype schema; kept only until the Python bridge moves.
+    - grpcgi/v1
+  use:
+    - STANDARD
+  except:
+    # Deliberate: the message types are shared by the gRPC binding and the
+    # local process binding, so they are named for what they are (events on
+    # the request/response stream) rather than for one RPC.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - SERVICE_SUFFIX
+breaking:
+  use:
+    - WIRE_JSON

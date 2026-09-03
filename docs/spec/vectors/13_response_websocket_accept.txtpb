@@ -1,0 +1,5 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+head {
+  status: 200
+  sec_websocket_protocol: "chat"
+}

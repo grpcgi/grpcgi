@@ -1,0 +1,4 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+detach {
+  retry_after_ms: 30000
+}

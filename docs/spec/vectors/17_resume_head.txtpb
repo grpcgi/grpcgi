@@ -1,0 +1,15 @@
+# type: grpcgi.v1alpha1.RequestEvent
+head {
+  method: METHOD_CONNECT
+  path: "/chat?room=42"
+  authority: "example.com"
+  scheme: SCHEME_HTTPS
+  end_of_stream: true
+  origin: "https://example.com"
+  sec_websocket_protocol: "chat"
+  sec_websocket_version: "13"
+  protocol: "websocket"
+  http_version: HTTP_VERSION_1_1
+  resume_session: "s-8f2a"
+  resume_after: 41
+}

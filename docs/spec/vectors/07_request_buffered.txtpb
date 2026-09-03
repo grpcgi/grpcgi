@@ -1,0 +1,10 @@
+# type: grpcgi.v1alpha1.RequestEvent
+head {
+  method: METHOD_POST
+  path: "/echo"
+  authority: "example.com"
+  scheme: SCHEME_HTTP
+  content_type: "application/json"
+  content_length: 2
+  body: "{}"
+}

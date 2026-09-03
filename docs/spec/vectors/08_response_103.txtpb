@@ -1,0 +1,5 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+head {
+  status: 103
+  link: "</style.css>; rel=preload; as=style"
+}

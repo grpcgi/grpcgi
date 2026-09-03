@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.RequestEvent
+body { data: "world" }

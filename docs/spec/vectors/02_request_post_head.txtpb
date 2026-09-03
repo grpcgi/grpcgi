@@ -1,0 +1,13 @@
+# type: grpcgi.v1alpha1.RequestEvent
+head {
+  method: METHOD_POST
+  path: "/upload"
+  authority: "example.com"
+  scheme: SCHEME_HTTPS
+  content_type: "text/plain"
+  content_length: 11
+  cookie: "a=1"
+  cookie: "b=2"
+  headers { name: "x-custom" value: "\377\001" }
+  http_version: HTTP_VERSION_1_1
+}

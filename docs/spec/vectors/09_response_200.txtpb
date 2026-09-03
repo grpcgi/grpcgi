@@ -1,0 +1,10 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+head {
+  status: 200
+  content_type: "text/html; charset=utf-8"
+  content_length: 5
+  set_cookie: "sid=1; Path=/; HttpOnly"
+  set_cookie: "theme=dark; Path=/"
+  cache_control: "no-store"
+  headers { name: "x-app-version" value: "1.2.3" }
+}

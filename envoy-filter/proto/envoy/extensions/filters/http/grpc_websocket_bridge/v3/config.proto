@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package envoy.extensions.filters.http.grpc_websocket_bridge.v3;
+
+import "google/protobuf/duration.proto";
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option java_package = "io.envoyproxy.envoy.extensions.filters.http.grpc_websocket_bridge.v3";
+option java_outer_classname = "ConfigProto";
+option java_multiple_files = true;
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/grpc_websocket_bridge/v3;grpc_websocket_bridgev3";
+option (udpa.annotations.file_status).package_version_status = ACTIVE;
+
+// [#protodoc-title: gRPC WebSocket bridge]
+// [#extension: envoy.filters.http.grpc_websocket_bridge]
+//
+// The gRPC WebSocket bridge filter intercepts incoming WebSocket upgrade
+// requests and proxies data frames to/from a bidi-streaming gRPC service
+// (``grpcgi.v1.WebSocketBridge/Connect``). This allows a standard gRPC
+// server to act as a WebSocket application server without speaking the
+// WebSocket wire protocol natively.
+
+// [#next-free-field: 5]
+message Config {
+  // The name of the Envoy cluster that hosts the upstream gRPC service.
+  // This cluster must be defined in the static or dynamic cluster config.
+  //
+  // .. note::
+  //    The cluster is expected to accept raw h2c or TLS h2 traffic and
+  //    serve the ``grpcgi.v1.WebSocketBridge`` service.
+  string cluster_name = 1 [(validate.rules).string.min_len = 1];
+
+  // The value to use for the ``:authority`` / ``Host`` header on the
+  // outbound gRPC connection. Defaults to the cluster name when empty.
+  string authority = 2;
+
+  // Fully-qualified gRPC service name. Defaults to the grpcgi canonical
+  // value ``grpcgi.v1.WebSocketBridge`` when not set.
+  string service_full_name = 3;
+
+  // gRPC method name within the service. Defaults to ``Connect`` when
+  // not set.
+  string method_name = 4;
+}

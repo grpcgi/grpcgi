@@ -1,0 +1,465 @@
+// grpcgi exchange schema, v1alpha1.
+//
+// This file defines the messages that carry one HTTP exchange (a request and
+// its response, or a tunnel established by CONNECT) between an HTTP edge and
+// an application server. The abstract semantics live in
+// docs/spec/exchange-model.md; the encoding rules for this schema live in
+// docs/spec/schema.md; transport bindings live in docs/spec/grpc-binding.md
+// and docs/spec/local-binding.md.
+//
+// Design summary:
+//   * One exchange is a stream of RequestEvent messages in one direction and
+//     ResponseEvent messages in the other. Each stream is head, then body
+//     chunks, then optional trailers. A tunnel switches the stream to
+//     WebSocket messages or raw bytes after a 2xx response to CONNECT.
+//   * Well-known header names are dedicated fields chosen from a FROZEN table
+//     (docs/spec/header-table.md). Everything else is in `headers`.
+//   * Header values are bytes. Names are lower-case ASCII tokens.
+//   * Bodies are bounded chunks; there is no application-level flow control.
+//   * The schema can carry any HTTP exchange losslessly, including gRPC, but
+//     the gRPC binding forwards native gRPC without encapsulation by default.
+//
+// Stability: v1alpha1. Field numbers already assigned are retained, but the
+// package may still change incompatibly until the conformance suite exists.
+
+syntax = "proto3";
+
+package grpcgi.v1alpha1;
+
+import "google/protobuf/any.proto";
+
+option go_package = "github.com/grpcgi/go/gen/grpcgi/v1alpha1;grpcgiv1alpha1";
+option java_multiple_files = true;
+option java_package = "io.grpcgi.v1alpha1";
+
+// ── Stream events ────────────────────────────────────────────────────────────
+
+// One message on the edge-to-application stream.
+//
+// Legal orders (see exchange-model.md §3):
+//   head, body*, trailers?                          plain request
+//   head(CONNECT, protocol="websocket"), websocket_message*, websocket_close?
+//   head(CONNECT), body*                            raw tunnel bytes
+message RequestEvent {
+  oneof kind {
+    RequestHead head = 1;
+    BodyChunk body = 2;
+    Trailers trailers = 3;
+    WebSocketMessage websocket_message = 4;
+    WebSocketClose websocket_close = 5;
+  }
+  // 6..99 are reserved for future standard event kinds (for example HTTP
+  // datagrams / capsules, RFC 9297). A receiver that sees an unknown kind
+  // MUST treat it as a protocol error, because continuing could desynchronize
+  // stream state.
+  reserved 6 to 99;
+}
+
+// One message on the application-to-edge stream.
+//
+// Legal orders:
+//   head(1xx)*, head(final), body*, trailers?       plain response
+//   head(2xx to CONNECT), websocket_message*, websocket_close?   websocket
+//   head(2xx to CONNECT), body*                     raw tunnel bytes
+//   head(non-2xx to CONNECT), body*, trailers?      tunnel rejected
+//   head(final, with session), (body | websocket_message)*, detach
+//                                                   let go, resumable (§5.1)
+message ResponseEvent {
+  oneof kind {
+    ResponseHead head = 1;
+    BodyChunk body = 2;
+    Trailers trailers = 3;
+    WebSocketMessage websocket_message = 4;
+    WebSocketClose websocket_close = 5;
+    Detach detach = 6;
+  }
+  reserved 7 to 99;
+}
+
+// The application lets go of a session exchange without ending the session
+// (exchange-model.md §5.1). Legal only after a final head that carried
+// `session`; the last event on the stream, followed by a normal end of the
+// RPC. The edge keeps the downstream connection and resumes later with
+// `RequestHead.resume_session`. Only the application detaches: an exchange
+// the edge cancels is a downstream that went away.
+message Detach {
+  // How long the edge should wait before resuming if the downstream has
+  // nothing to send, in milliseconds. 0 means resume now (a drain). The edge
+  // resumes sooner when downstream data arrives and in any case before the
+  // session TTL expires.
+  uint64 retry_after_ms = 1;
+}
+
+// ── Heads ────────────────────────────────────────────────────────────────────
+
+enum Method {
+  METHOD_UNSPECIFIED = 0;
+  METHOD_GET = 1;
+  METHOD_HEAD = 2;
+  METHOD_POST = 3;
+  METHOD_PUT = 4;
+  METHOD_DELETE = 5;
+  METHOD_CONNECT = 6;
+  METHOD_OPTIONS = 7;
+  METHOD_TRACE = 8;
+  METHOD_PATCH = 9;
+  METHOD_QUERY = 10;
+  METHOD_PROPFIND = 11;
+  METHOD_PROPPATCH = 12;
+  METHOD_MKCOL = 13;
+  METHOD_COPY = 14;
+  METHOD_MOVE = 15;
+  METHOD_LOCK = 16;
+  METHOD_UNLOCK = 17;
+  METHOD_REPORT = 18;
+  METHOD_SEARCH = 19;
+  METHOD_PURGE = 20;
+  // Any other registered or private method: set METHOD_OTHER and
+  // `custom_method`.
+  METHOD_OTHER = 100;
+}
+
+enum Scheme {
+  SCHEME_UNSPECIFIED = 0;
+  SCHEME_HTTP = 1;
+  SCHEME_HTTPS = 2;
+  // Other schemes are rejected at the edge with 400. `ws` and `wss` never
+  // appear; WebSocket is carried as extended CONNECT over `https`/`http`.
+}
+
+enum HttpVersion {
+  HTTP_VERSION_UNSPECIFIED = 0;
+  HTTP_VERSION_1_0 = 1;
+  HTTP_VERSION_1_1 = 2;
+  HTTP_VERSION_2 = 3;
+  HTTP_VERSION_3 = 4;
+}
+
+// Request control data plus headers. Field layout:
+//   1..15    one-byte tags: pseudo-fields, end_of_stream, hottest headers
+//   16..199  frozen header table (alphabetical), unused numbers reserved
+//   200..299 control fields
+message RequestHead {
+  // Request method. METHOD_OTHER requires `custom_method`.
+  Method method = 1;
+  // Request target in origin form: path and optional query, beginning with
+  // "/". "*" for `OPTIONS *`. Empty for CONNECT without `protocol`.
+  // MUST be ASCII; the edge rejects other targets with 400.
+  string path = 2;
+  // Authority (host and optional port). Replaces both `:authority` and
+  // `Host`; the edge reconciles them and neither appears in `headers`.
+  string authority = 3;
+  Scheme scheme = 4;
+  // True when the request has no body and no trailers. This is the only way
+  // to end a bodyless request without relying on transport half-close.
+  bool end_of_stream = 5;
+
+  // BEGIN GENERATED REQUEST HEADER TABLE
+  // Frozen header table (request). Generated by docs/spec/tools/header_table.py.
+  // Every value of a header named here MUST be carried in its field, never in
+  // `headers`. Order among values of one name is significant and preserved.
+  repeated bytes cookie = 6;  // cookie
+  repeated bytes user_agent = 7;  // user-agent
+  repeated bytes accept = 8;  // accept
+  repeated bytes accept_encoding = 9;  // accept-encoding
+  repeated bytes content_type = 10;  // content-type
+  optional uint64 content_length = 11;  // content-length
+  repeated bytes authorization = 12;  // authorization
+  repeated bytes x_request_id = 13;  // x-request-id
+  repeated bytes traceparent = 14;  // traceparent
+  repeated bytes x_forwarded_for = 15;  // x-forwarded-for
+
+  // Remainder of the table, alphabetical. Two-byte tags.
+  repeated bytes accept_charset = 16;  // accept-charset
+  repeated bytes accept_language = 17;  // accept-language
+  repeated bytes access_control_request_headers = 18;  // access-control-request-headers
+  repeated bytes access_control_request_method = 19;  // access-control-request-method
+  repeated bytes alt_used = 20;  // alt-used
+  repeated bytes baggage = 21;  // baggage
+  repeated bytes cache_control = 22;  // cache-control
+  repeated bytes connect_accept_encoding = 23;  // connect-accept-encoding
+  repeated bytes connect_content_encoding = 24;  // connect-content-encoding
+  repeated bytes connect_protocol_version = 25;  // connect-protocol-version
+  repeated bytes connect_timeout_ms = 26;  // connect-timeout-ms
+  repeated bytes content_disposition = 27;  // content-disposition
+  repeated bytes content_encoding = 28;  // content-encoding
+  repeated bytes content_language = 29;  // content-language
+  repeated bytes date = 30;  // date
+  repeated bytes dnt = 31;  // dnt
+  repeated bytes early_data = 32;  // early-data
+  repeated bytes expect = 33;  // expect
+  repeated bytes forwarded = 34;  // forwarded
+  repeated bytes from = 35;  // from
+  repeated bytes idempotency_key = 36;  // idempotency-key
+  repeated bytes if_match = 37;  // if-match
+  repeated bytes if_modified_since = 38;  // if-modified-since
+  repeated bytes if_none_match = 39;  // if-none-match
+  repeated bytes if_range = 40;  // if-range
+  repeated bytes if_unmodified_since = 41;  // if-unmodified-since
+  repeated bytes max_forwards = 42;  // max-forwards
+  repeated bytes origin = 43;  // origin
+  repeated bytes pragma = 44;  // pragma
+  repeated bytes prefer = 45;  // prefer
+  repeated bytes priority = 46;  // priority
+  repeated bytes proxy_authorization = 47;  // proxy-authorization
+  repeated bytes purpose = 48;  // purpose
+  repeated bytes range = 49;  // range
+  repeated bytes referer = 50;  // referer
+  repeated bytes save_data = 51;  // save-data
+  repeated bytes sec_ch_ua = 52;  // sec-ch-ua
+  repeated bytes sec_ch_ua_mobile = 53;  // sec-ch-ua-mobile
+  repeated bytes sec_ch_ua_platform = 54;  // sec-ch-ua-platform
+  repeated bytes sec_fetch_dest = 55;  // sec-fetch-dest
+  repeated bytes sec_fetch_mode = 56;  // sec-fetch-mode
+  repeated bytes sec_fetch_site = 57;  // sec-fetch-site
+  repeated bytes sec_fetch_user = 58;  // sec-fetch-user
+  repeated bytes sec_gpc = 59;  // sec-gpc
+  repeated bytes sec_websocket_extensions = 60;  // sec-websocket-extensions
+  repeated bytes sec_websocket_key = 61;  // sec-websocket-key
+  repeated bytes sec_websocket_protocol = 62;  // sec-websocket-protocol
+  repeated bytes sec_websocket_version = 63;  // sec-websocket-version
+  repeated bytes signature = 64;  // signature
+  repeated bytes signature_input = 65;  // signature-input
+  repeated bytes te = 66;  // te
+  repeated bytes tracestate = 67;  // tracestate
+  repeated bytes trailer = 68;  // trailer
+  repeated bytes upgrade_insecure_requests = 69;  // upgrade-insecure-requests
+  repeated bytes via = 70;  // via
+  repeated bytes x_api_key = 71;  // x-api-key
+  repeated bytes x_b3_flags = 72;  // x-b3-flags
+  repeated bytes x_b3_parentspanid = 73;  // x-b3-parentspanid
+  repeated bytes x_b3_sampled = 74;  // x-b3-sampled
+  repeated bytes x_b3_spanid = 75;  // x-b3-spanid
+  repeated bytes x_b3_traceid = 76;  // x-b3-traceid
+  repeated bytes x_csrf_token = 77;  // x-csrf-token
+  repeated bytes x_envoy_attempt_count = 78;  // x-envoy-attempt-count
+  repeated bytes x_envoy_decorator_operation = 79;  // x-envoy-decorator-operation
+  repeated bytes x_envoy_downstream_service_cluster = 80;  // x-envoy-downstream-service-cluster
+  repeated bytes x_envoy_downstream_service_node = 81;  // x-envoy-downstream-service-node
+  repeated bytes x_envoy_expected_rq_timeout_ms = 82;  // x-envoy-expected-rq-timeout-ms
+  repeated bytes x_envoy_external_address = 83;  // x-envoy-external-address
+  repeated bytes x_envoy_force_trace = 84;  // x-envoy-force-trace
+  repeated bytes x_envoy_internal = 85;  // x-envoy-internal
+  repeated bytes x_envoy_original_path = 86;  // x-envoy-original-path
+  repeated bytes x_forwarded_client_cert = 87;  // x-forwarded-client-cert
+  repeated bytes x_forwarded_host = 88;  // x-forwarded-host
+  repeated bytes x_forwarded_port = 89;  // x-forwarded-port
+  repeated bytes x_forwarded_proto = 90;  // x-forwarded-proto
+  repeated bytes x_grpc_web = 91;  // x-grpc-web
+  repeated bytes x_http_method_override = 92;  // x-http-method-override
+  repeated bytes x_real_ip = 93;  // x-real-ip
+  repeated bytes x_requested_with = 94;  // x-requested-with
+  repeated bytes x_user_agent = 95;  // x-user-agent
+
+  // Permanently reserved. The table is frozen; new names use `headers`.
+  reserved 96 to 199;
+  // END GENERATED REQUEST HEADER TABLE
+
+  // ── Control fields ──
+  // Method text when `method` is METHOD_OTHER. Upper-case token.
+  string custom_method = 200;
+  // The `:protocol` pseudo-header of an extended CONNECT (RFC 8441), e.g.
+  // "websocket". Empty for a plain CONNECT and for non-CONNECT requests.
+  // An HTTP/1.1 `Upgrade: websocket` request is normalized to this form by
+  // the edge.
+  string protocol = 201;
+  // Version spoken by the downstream client, not by the bridge transport.
+  HttpVersion http_version = 202;
+  // Downstream peer as seen after the edge's trusted-proxy policy. Text form
+  // of an IPv4/IPv6 address or a Unix socket path. Trustworthy only when the
+  // bridge peer is authenticated and authorized to assert client identity.
+  string remote_address = 203;
+  uint32 remote_port = 204;
+  // Address the edge accepted the connection on. Maps to CGI SERVER_ADDR /
+  // SERVER_PORT and ASGI `server`.
+  string local_address = 205;
+  uint32 local_port = 206;
+  // True when the downstream connection to the edge was TLS.
+  bool tls = 207;
+  // TLS server name indication presented by the downstream client, if any.
+  string tls_server_name = 208;
+  // Mounted prefix under which the application is served (CGI SCRIPT_NAME,
+  // ASGI root_path). Empty when the application is mounted at "/". `path`
+  // still contains the full path including this prefix.
+  string root_path = 209;
+  // Buffered mode: the complete request body inline. When non-empty the
+  // request has no further body events and no trailers, exactly as if
+  // end_of_stream were true. A head with a non-empty `body` and
+  // end_of_stream=false is a protocol error.
+  bytes body = 210;
+  // Headers not in the frozen table. Names are lower-case; a name that has a
+  // dedicated field, a pseudo-header, `host`, or a hop-by-hop name here is a
+  // protocol error. Order among same-named entries is preserved.
+  repeated Header headers = 211;
+  // Vendor or experimental data about this request. Receivers ignore unknown
+  // types. Must not be required for correct processing.
+  repeated google.protobuf.Any extensions = 212;
+  // Resume a session (exchange-model.md §5.1). The key the application
+  // returned in `ResponseHead.session` on an earlier exchange, sent by the
+  // edge when it re-attaches a live downstream connection to a new exchange.
+  // Absent on a fresh exchange.
+  bytes resume_session = 213;
+  // How much of the application's output the downstream has already received
+  // on this session: WebSocketMessage events for a websocket tunnel, body
+  // bytes for a response body. The application resumes output after this
+  // point. Meaningful only with `resume_session`.
+  uint64 resume_after = 214;
+
+  reserved 215 to 299;
+}
+
+// Response control data plus headers. Same layout as RequestHead.
+message ResponseHead {
+  // HTTP status, 100..599. A head with status 100..199 is informational and
+  // may repeat; exactly one head with status 200..599 follows.
+  uint32 status = 1;
+  // True when this final head has no body and no trailers. Meaningless on an
+  // informational head. Distinguishes "no body" from "empty trailers".
+  bool end_of_stream = 2;
+
+  // BEGIN GENERATED RESPONSE HEADER TABLE
+  // Frozen header table (response). Generated by docs/spec/tools/header_table.py.
+  // Every value of a header named here MUST be carried in its field, never in
+  // `headers`. Order among values of one name is significant and preserved.
+  repeated bytes content_type = 3;  // content-type
+  optional uint64 content_length = 4;  // content-length
+  repeated bytes set_cookie = 5;  // set-cookie
+  repeated bytes cache_control = 6;  // cache-control
+  repeated bytes etag = 7;  // etag
+  repeated bytes date = 8;  // date
+  repeated bytes vary = 9;  // vary
+  repeated bytes content_encoding = 10;  // content-encoding
+  repeated bytes location = 11;  // location
+  repeated bytes server = 12;  // server
+  repeated bytes last_modified = 13;  // last-modified
+  repeated bytes x_request_id = 14;  // x-request-id
+  repeated bytes access_control_allow_origin = 15;  // access-control-allow-origin
+
+  // Remainder of the table, alphabetical. Two-byte tags.
+  repeated bytes accept_ch = 16;  // accept-ch
+  repeated bytes accept_ranges = 17;  // accept-ranges
+  repeated bytes access_control_allow_credentials = 18;  // access-control-allow-credentials
+  repeated bytes access_control_allow_headers = 19;  // access-control-allow-headers
+  repeated bytes access_control_allow_methods = 20;  // access-control-allow-methods
+  repeated bytes access_control_expose_headers = 21;  // access-control-expose-headers
+  repeated bytes access_control_max_age = 22;  // access-control-max-age
+  repeated bytes age = 23;  // age
+  repeated bytes allow = 24;  // allow
+  repeated bytes alt_svc = 25;  // alt-svc
+  repeated bytes cache_status = 26;  // cache-status
+  repeated bytes clear_site_data = 27;  // clear-site-data
+  repeated bytes connect_content_encoding = 28;  // connect-content-encoding
+  repeated bytes content_disposition = 29;  // content-disposition
+  repeated bytes content_language = 30;  // content-language
+  repeated bytes content_location = 31;  // content-location
+  repeated bytes content_range = 32;  // content-range
+  repeated bytes content_security_policy = 33;  // content-security-policy
+  repeated bytes content_security_policy_report_only = 34;  // content-security-policy-report-only
+  repeated bytes cross_origin_embedder_policy = 35;  // cross-origin-embedder-policy
+  repeated bytes cross_origin_opener_policy = 36;  // cross-origin-opener-policy
+  repeated bytes cross_origin_resource_policy = 37;  // cross-origin-resource-policy
+  repeated bytes expect_ct = 38;  // expect-ct
+  repeated bytes expires = 39;  // expires
+  repeated bytes link = 40;  // link
+  repeated bytes nel = 41;  // nel
+  repeated bytes permissions_policy = 42;  // permissions-policy
+  repeated bytes pragma = 43;  // pragma
+  repeated bytes preference_applied = 44;  // preference-applied
+  repeated bytes priority = 45;  // priority
+  repeated bytes proxy_authenticate = 46;  // proxy-authenticate
+  repeated bytes referrer_policy = 47;  // referrer-policy
+  repeated bytes refresh = 48;  // refresh
+  repeated bytes report_to = 49;  // report-to
+  repeated bytes reporting_endpoints = 50;  // reporting-endpoints
+  repeated bytes repr_digest = 51;  // repr-digest
+  repeated bytes retry_after = 52;  // retry-after
+  repeated bytes sec_websocket_accept = 53;  // sec-websocket-accept
+  repeated bytes sec_websocket_extensions = 54;  // sec-websocket-extensions
+  repeated bytes sec_websocket_protocol = 55;  // sec-websocket-protocol
+  repeated bytes server_timing = 56;  // server-timing
+  repeated bytes signature = 57;  // signature
+  repeated bytes signature_input = 58;  // signature-input
+  repeated bytes strict_transport_security = 59;  // strict-transport-security
+  repeated bytes timing_allow_origin = 60;  // timing-allow-origin
+  repeated bytes trailer = 61;  // trailer
+  repeated bytes via = 62;  // via
+  repeated bytes www_authenticate = 63;  // www-authenticate
+  repeated bytes x_content_type_options = 64;  // x-content-type-options
+  repeated bytes x_frame_options = 65;  // x-frame-options
+  repeated bytes x_powered_by = 66;  // x-powered-by
+  repeated bytes x_robots_tag = 67;  // x-robots-tag
+  repeated bytes x_xss_protection = 68;  // x-xss-protection
+
+  // Permanently reserved. The table is frozen; new names use `headers`.
+  reserved 69 to 199;
+  // END GENERATED RESPONSE HEADER TABLE
+
+  // ── Control fields ──
+  // Buffered mode: complete response body inline. Same rules as
+  // RequestHead.body.
+  bytes body = 200;
+  repeated Header headers = 201;
+  repeated google.protobuf.Any extensions = 202;
+  // Opt this exchange into resumption (exchange-model.md §5.1). An opaque key,
+  // 1..256 bytes, on the final head of an accepted tunnel or of a response
+  // whose body has not ended. With it the edge may end this exchange and
+  // later open a new one carrying `RequestHead.resume_session`, keeping the
+  // downstream connection open across the gap. Empty means not resumable.
+  bytes session = 203;
+  // How long after the exchange ends the application will honor a resume for
+  // this key, in milliseconds. 0 means the edge default (60 000).
+  uint64 session_ttl_ms = 204;
+
+  reserved 205 to 299;
+}
+
+// A header field that is not in the frozen table.
+message Header {
+  // Lower-case ASCII token (RFC 9110 §5.1). Never begins with ":".
+  string name = 1;
+  // Field value, byte-exact, with no leading or trailing whitespace. MUST NOT
+  // contain NUL, CR, or LF.
+  bytes value = 2;
+}
+
+// ── Body, trailers, tunnels ──────────────────────────────────────────────────
+
+// A piece of a body, or of a raw CONNECT tunnel after acceptance.
+message BodyChunk {
+  // At most the binding's maximum chunk size (default 64 KiB). May be empty
+  // only when end_of_stream is true.
+  bytes data = 1;
+  // True on the final chunk when no trailers follow. When trailers follow,
+  // the last chunk has end_of_stream=false and the Trailers event ends the
+  // stream. In a raw tunnel, true means half-close of that direction.
+  bool end_of_stream = 2;
+}
+
+// Trailer section. Always the last event in its direction.
+message Trailers {
+  // No dedicated fields: trailers are rare and never on the hot path.
+  // Same naming and validity rules as Header.
+  repeated Header headers = 1;
+  repeated google.protobuf.Any extensions = 2;
+}
+
+// One complete WebSocket message after a CONNECT with protocol="websocket"
+// has been accepted. The edge reassembles fragments, unmasks client frames,
+// enforces the message size limit, and validates text as UTF-8 before
+// producing this event. Ping and pong stay at the edge.
+message WebSocketMessage {
+  bytes payload = 1;
+  // True for a binary message (opcode 0x2), false for text (opcode 0x1).
+  bool binary = 2;
+}
+
+// WebSocket close. Either side may send it once; after sending it, that side
+// sends no more websocket_message events. Ends the stream in that direction.
+message WebSocketClose {
+  // RFC 6455 §7.4 status code. Zero means the transport ended without a
+  // close frame (maps to 1006 on the application side).
+  uint32 code = 1;
+  // UTF-8 reason. code + encoded reason MUST fit in a 125-byte control
+  // frame payload, so the reason is at most 123 bytes.
+  string reason = 2;
+}

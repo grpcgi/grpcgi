@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.RequestEvent
+websocket_close { code: 1000 reason: "bye" }

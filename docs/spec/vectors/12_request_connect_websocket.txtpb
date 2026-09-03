@@ -1,0 +1,12 @@
+# type: grpcgi.v1alpha1.RequestEvent
+head {
+  method: METHOD_CONNECT
+  path: "/chat?room=42"
+  authority: "example.com"
+  scheme: SCHEME_HTTPS
+  origin: "https://example.com"
+  sec_websocket_protocol: "chat, superchat"
+  sec_websocket_version: "13"
+  protocol: "websocket"
+  http_version: HTTP_VERSION_1_1
+}

@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+body { data: "<p>hi" end_of_stream: true }

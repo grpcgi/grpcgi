@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.RequestEvent
+websocket_message { payload: "\000\001\002" binary: true }

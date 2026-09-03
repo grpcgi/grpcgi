@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.ResponseEvent
+head { status: 204 end_of_stream: true }

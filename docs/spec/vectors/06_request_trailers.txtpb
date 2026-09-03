@@ -1,0 +1,2 @@
+# type: grpcgi.v1alpha1.RequestEvent
+trailers { headers { name: "x-checksum" value: "sha256=abc" } }

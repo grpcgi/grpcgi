@@ -1,0 +1,35 @@
+// grpcgi gRPC binding, v1alpha1.
+//
+// The exchange schema (exchange.proto) is transport-neutral. This file binds
+// it to gRPC: one bidirectional streaming RPC per HTTP exchange. Rules that
+// belong to the binding rather than the schema (metadata, deadlines, status
+// mapping, passthrough of native gRPC, limits) are in
+// docs/spec/grpc-binding.md.
+
+syntax = "proto3";
+
+package grpcgi.v1alpha1;
+
+import "grpcgi/v1alpha1/exchange.proto";
+
+option go_package = "github.com/grpcgi/go/gen/grpcgi/v1alpha1;grpcgiv1alpha1";
+option java_multiple_files = true;
+option java_package = "io.grpcgi.v1alpha1";
+
+// An application server that accepts HTTP exchanges over gRPC.
+//
+// A process typically registers this service next to its own native gRPC
+// services and grpc.health.v1.Health on one listener. The edge forwards
+// native gRPC streams to the application's own services directly and uses
+// Exchange only for non-gRPC HTTP.
+service HttpBridge {
+  // Carries exactly one HTTP exchange. The client (edge) sends RequestEvent
+  // messages; the server (application) sends ResponseEvent messages.
+  //
+  // The RPC status describes the bridge operation, never the application's
+  // HTTP status. A complete HTTP response, including an application 4xx or
+  // 5xx, ends with OK. A non-OK status before the first ResponseHead is
+  // translated to an HTTP status by the edge (grpc-binding.md §5); a non-OK
+  // status after the first ResponseHead resets the downstream stream.
+  rpc Exchange(stream RequestEvent) returns (stream ResponseEvent);
+}
